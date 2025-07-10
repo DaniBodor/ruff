@@ -12,14 +12,17 @@ use ruff_python_ast::{
 };
 use std::hash::Hasher;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, CacheKey)]
 #[serde(untagged)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum AllowedValue {
     String(String),
     Int(i64),
-    Float(f64),
-    Complex { real: f64, imag: f64 },
+    Float(AllowedFloatValue),
+    Complex {
+        real: AllowedFloatValue,
+        imag: AllowedFloatValue,
+    },
     Bytes(Vec<u8>),
 }
 
@@ -45,49 +48,33 @@ impl AllowedValue {
     }
 }
 
-impl PartialEq for AllowedValue {
+struct AllowedFloatValue {
+    value: f64,
+}
+
+impl AllowedFloatValue {
+    fn new(value: f64) -> Self {
+        AllowedFloatValue { value }
+    }
+}
+
+impl PartialEq for AllowedFloatValue {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (AllowedValue::String(a), AllowedValue::String(b)) => a == b,
-            (AllowedValue::Int(a), AllowedValue::Int(b)) => a == b,
-            (AllowedValue::Bytes(a), AllowedValue::Bytes(b)) => a == b,
-            // dealing with floating point precision issues
-            (AllowedValue::Float(a), AllowedValue::Float(b)) => a.to_bits() == b.to_bits(),
-            (
-                AllowedValue::Complex { real: r1, imag: i1 },
-                AllowedValue::Complex { real: r2, imag: i2 },
-            ) => r1.to_bits() == r2.to_bits() && i1.to_bits() == i2.to_bits(),
+            (AllowedFloatValue(a), AllowedFloatValue(b)) => a.to_bits() == b.to_bits(),
             _ => false,
         }
     }
 }
 
-impl Eq for AllowedValue {}
+impl Eq for AllowedFloatValue {}
 
-impl CacheKey for AllowedValue {
+impl CacheKey for AllowedFloatValue {
     fn cache_key(&self, state: &mut CacheKeyHasher) {
         match self {
-            AllowedValue::String(s) => {
-                state.write_usize(0);
-                s.cache_key(state);
-            }
-            AllowedValue::Int(i) => {
-                state.write_usize(1);
-                i.cache_key(state);
-            }
-            AllowedValue::Bytes(b) => {
-                state.write_usize(3);
-                b.cache_key(state);
-            }
-            // dealing with floating point precision issues for deterministic caching
-            AllowedValue::Float(f) => {
+            AllowedFloatValue::Float(f) => {
                 state.write_usize(4);
                 f.to_bits().cache_key(state);
-            }
-            AllowedValue::Complex { real, imag } => {
-                state.write_usize(5);
-                real.to_bits().cache_key(state);
-                imag.to_bits().cache_key(state);
             }
         }
     }
