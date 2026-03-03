@@ -63,19 +63,20 @@ impl Violation for MagicValueComparison {
 }
 
 /// If an [`Expr`] is a literal (or unary operation on a literal), return the [`LiteralExpressionRef`].
-fn as_literal(expr: &Expr) -> Option<LiteralExpressionRef<'_>> {
+fn as_literal(expr: &Expr) -> Option<(LiteralExpressionRef<'_>, Option<&UnaryOp>)> {
     match expr {
         Expr::UnaryOp(ast::ExprUnaryOp {
-            op: UnaryOp::UAdd | UnaryOp::USub | UnaryOp::Invert,
+            op: op @ (UnaryOp::UAdd | UnaryOp::USub | UnaryOp::Invert),
             operand,
             ..
-        }) => operand.as_literal_expr(),
-        _ => expr.as_literal_expr(),
+        }) => operand.as_literal_expr().map(|literal| (literal, Some(op))),
+        _ => expr.as_literal_expr().map(|literal| (literal, None)),
     }
 }
 
 fn is_magic_value(
     literal_expr: LiteralExpressionRef,
+    unary_op: Option<&UnaryOp>,
     allowed_types: &[ConstantType],
     allowed_values: &[AllowedValue],
 ) -> bool {
@@ -89,7 +90,7 @@ fn is_magic_value(
     // Check if the literal value is in the allowed values list
     if allowed_values
         .iter()
-        .any(|value| value.matches_literal(literal_expr))
+        .any(|value| matches_allowed_value(value, literal_expr, unary_op))
     {
         return false;
     }
@@ -101,6 +102,85 @@ fn is_magic_value(
             | LiteralExpressionRef::BooleanLiteral(_)
             | LiteralExpressionRef::EllipsisLiteral(_)
     )
+}
+
+fn matches_allowed_value(
+    allowed_value: &AllowedValue,
+    literal_expr: LiteralExpressionRef,
+    unary_op: Option<&UnaryOp>,
+) -> bool {
+    match unary_op {
+        Some(UnaryOp::UAdd | UnaryOp::USub) => {
+            if let (
+                AllowedValue::Int(allowed),
+                LiteralExpressionRef::NumberLiteral(ast::ExprNumberLiteral { value, .. }),
+            ) = (allowed_value, literal_expr)
+            {
+                return match value {
+                    ast::Number::Int(i) => {
+                        i.as_i64()
+                            .and_then(|value| match unary_op {
+                                Some(UnaryOp::USub) => value.checked_neg(),
+                                _ => Some(value),
+                            })
+                            .and_then(|value| i32::try_from(value).ok())
+                            == Some(*allowed)
+                    }
+                    ast::Number::Float(f) => {
+                        let value = if matches!(unary_op, Some(UnaryOp::USub)) {
+                            -*f
+                        } else {
+                            *f
+                        };
+                        #[expect(clippy::cast_possible_truncation)]
+                        {
+                            is_exact_integer_f64(value)
+                                && value >= f64::from(i32::MIN)
+                                && value <= f64::from(i32::MAX)
+                                && value as i32 == *allowed
+                        }
+                    }
+                    ast::Number::Complex { .. } => false,
+                };
+            }
+
+            if let (
+                AllowedValue::Float(allowed),
+                LiteralExpressionRef::NumberLiteral(ast::ExprNumberLiteral { value, .. }),
+            ) = (allowed_value, literal_expr)
+            {
+                return match value {
+                    ast::Number::Float(f) => {
+                        let value = if matches!(unary_op, Some(UnaryOp::USub)) {
+                            -*f
+                        } else {
+                            *f
+                        };
+                        allowed.value().to_bits() == value.to_bits()
+                    }
+                    ast::Number::Int(i) => i
+                        .as_i64()
+                        .and_then(|value| match unary_op {
+                            Some(UnaryOp::USub) => value.checked_neg(),
+                            _ => Some(value),
+                        })
+                        .and_then(|value| i32::try_from(value).ok())
+                        .is_some_and(|value| {
+                            allowed.value().to_bits() == f64::from(value).to_bits()
+                        }),
+                    ast::Number::Complex { .. } => false,
+                };
+            }
+
+            allowed_value.matches_literal(literal_expr)
+        }
+        _ => allowed_value.matches_literal(literal_expr),
+    }
+}
+
+fn is_exact_integer_f64(value: f64) -> bool {
+    let fractional_bits = value.fract().to_bits();
+    fractional_bits == 0.0_f64.to_bits() || fractional_bits == (-0.0_f64).to_bits()
 }
 
 /// PLR2004
@@ -117,8 +197,8 @@ pub(crate) fn magic_value_comparison(checker: &Checker, left: &Expr, comparators
     let allowed_values: &[AllowedValue] = &checker.settings().pylint.allow_magic_values;
 
     for comparison_expr in std::iter::once(left).chain(comparators) {
-        if let Some(value) = as_literal(comparison_expr) {
-            if is_magic_value(value, allowed_types, allowed_values) {
+        if let Some((value, unary_op)) = as_literal(comparison_expr) {
+            if is_magic_value(value, unary_op, allowed_types, allowed_values) {
                 checker.report_diagnostic(
                     MagicValueComparison {
                         value: checker.locator().slice(comparison_expr).to_string(),

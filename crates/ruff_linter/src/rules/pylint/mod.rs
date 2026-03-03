@@ -18,7 +18,7 @@ mod tests {
 
     use crate::settings::LinterSettings;
     use crate::settings::types::PreviewMode;
-    use crate::test::test_path;
+    use crate::test::{test_path, test_snippet};
     use crate::{assert_diagnostics, assert_diagnostics_diff};
 
     #[test_case(Rule::SingledispatchMethod, Path::new("singledispatch_method.py"))]
@@ -304,6 +304,42 @@ mod tests {
         )?;
         assert_diagnostics!(diagnostics);
         Ok(())
+    }
+
+    #[test]
+    fn allow_magic_values_positive_does_not_allow_negative() {
+        let diagnostics = test_snippet(
+            r"
+if value == -1:
+    pass
+",
+            &LinterSettings {
+                pylint: pylint::settings::Settings {
+                    allow_magic_values: vec![pylint::settings::AllowedValue::Int(1)],
+                    ..pylint::settings::Settings::default()
+                },
+                ..LinterSettings::for_rule(Rule::MagicValueComparison)
+            },
+        );
+        assert_eq!(diagnostics.len(), 1);
+    }
+
+    #[test]
+    fn allow_magic_values_negative_value_is_recognized() {
+        let diagnostics = test_snippet(
+            r"
+if value == -1:
+    pass
+",
+            &LinterSettings {
+                pylint: pylint::settings::Settings {
+                    allow_magic_values: vec![pylint::settings::AllowedValue::Int(-1)],
+                    ..pylint::settings::Settings::default()
+                },
+                ..LinterSettings::for_rule(Rule::MagicValueComparison)
+            },
+        );
+        assert_eq!(diagnostics.len(), 0);
     }
 
     #[test]
